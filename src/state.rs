@@ -117,6 +117,30 @@ impl State {
         self.entries.remove(id);
         Ok(())
     }
+
+    /// Points every mail of one folder at another folder name.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file cannot be written.
+    pub fn rename_folder(&mut self, from: &str, to: &str) -> Result<()> {
+        let moved: Vec<(MailId, Entry)> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.folder == from)
+            .map(|(id, entry)| {
+                let entry = Entry {
+                    folder: to.to_owned(),
+                    ..entry.clone()
+                };
+                (id.clone(), entry)
+            })
+            .collect();
+        for (id, entry) in moved {
+            self.set(&id, entry)?;
+        }
+        Ok(())
+    }
 }
 
 fn line(id: &MailId, entry: &Entry) -> String {
@@ -195,6 +219,22 @@ mod tests {
         assert!(state.get(&id("A2")).is_some());
         let text = fs::read_to_string(dir.path().join(FILE)).unwrap();
         assert_eq!(text, "A2\tINBOX\ttwo\tl\n");
+    }
+
+    #[test]
+    fn a_renamed_folder_takes_its_mails_along_and_survives_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::open(dir.path()).unwrap();
+        state.set(&id("A1"), entry("Work", "one")).unwrap();
+        state.set(&id("A2"), entry("Work", "two")).unwrap();
+        state.set(&id("A3"), entry("INBOX", "three")).unwrap();
+        state.rename_folder("Work", "Jobs").unwrap();
+        drop(state);
+        let state = State::open(dir.path()).unwrap();
+        assert_eq!(state.get(&id("A1")).unwrap().folder, "Jobs");
+        assert_eq!(state.get(&id("A2")).unwrap().folder, "Jobs");
+        assert_eq!(state.get(&id("A2")).unwrap().file, "two");
+        assert_eq!(state.get(&id("A3")).unwrap().folder, "INBOX");
     }
 
     #[test]

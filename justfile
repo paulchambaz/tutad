@@ -19,6 +19,9 @@ coverage:
 sdk:
   scripts/sdk.sh
 
+sdk-check:
+  scripts/sdk.sh --check
+
 fmt:
   cargo fmt
 

@@ -15,7 +15,7 @@ use crate::message::MailId;
 use crate::state::{Entry, State};
 use crate::sync::{Layout, Mirror, PAUSE};
 
-const MOST_VANISHED: usize = 100;
+pub(crate) const MOST_VANISHED: usize = 100;
 const CHUNK: usize = 50;
 
 #[derive(Debug, PartialEq, Eq)]

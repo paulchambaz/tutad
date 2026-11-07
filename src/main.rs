@@ -134,7 +134,8 @@ async fn fetch_folder(name: &str) -> Result<()> {
     let maildir = Maildir::open(&connected.config.maildir);
     Mirror::new(connected.sdk, maildir, state)
         .initial(&layout)
-        .await
+        .await?;
+    Ok(())
 }
 
 async fn run() -> Result<()> {
@@ -142,7 +143,8 @@ async fn run() -> Result<()> {
     let session = session::load(&connected.state)?.context("no saved session after login")?;
     let mut layout = Layout::new(&folders::load(&connected.sdk).await?);
     let mut cursors = Cursors::open(&connected.state, now()?)?;
-    if cursors.is_empty() {
+    let away = cursors.is_empty();
+    if away {
         let latest = Fetcher::new(Arc::clone(&connected.sdk))
             .latest_batch()
             .await?;
@@ -165,7 +167,12 @@ async fn run() -> Result<()> {
         }
     }
     drop_copies(&mirror, &connected.state, &mut heads);
-    mirror.initial(&layout).await?;
+    let listing = mirror.initial(&layout).await?;
+    if away {
+        if let Err(error) = mirror.reconcile(&layout, &listing) {
+            warn!("not catching up with Tuta's changes: {error:#}");
+        }
+    }
     let mut stream = Stream::new(
         &connected.config.api_url,
         &session.user_id.0,

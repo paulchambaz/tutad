@@ -20,6 +20,7 @@ use crate::maildir::Maildir;
 use crate::message::MailId;
 use crate::render::render;
 use crate::state::{Entry, State};
+use crate::writeback::MOST_VANISHED;
 
 const MAIL: i64 = 97;
 const MAIL_SET: i64 = 429;
@@ -108,6 +109,16 @@ impl Layout {
             .iter()
             .find(|place| place.entries == entries)
             .map(|place| place.name.as_str())
+    }
+
+    fn renames(&self, new: &Layout) -> Vec<(String, String)> {
+        self.folders
+            .iter()
+            .filter_map(|old| {
+                let current = new.name(&old.entries)?;
+                (current != old.name).then(|| (old.name.clone(), current.to_owned()))
+            })
+            .collect()
     }
 
     pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
@@ -251,6 +262,29 @@ fn plan(batch: &Batch, layout: &Layout, state: &State) -> Vec<Action> {
     actions
 }
 
+fn stale(state: &State, layout: &Layout, listing: &HashMap<MailId, String>) -> Result<Vec<Action>> {
+    let actions: Vec<Action> = state
+        .all()
+        .filter(|(_, entry)| layout.names().any(|name| name == entry.folder))
+        .filter_map(|(id, entry)| match listing.get(id) {
+            None => Some(Action::Remove { id: id.clone() }),
+            Some(folder) if *folder != entry.folder => Some(Action::Move {
+                id: id.clone(),
+                to: folder.clone(),
+            }),
+            Some(_) => None,
+        })
+        .collect();
+    let gone = actions
+        .iter()
+        .filter(|action| matches!(action, Action::Remove { .. }))
+        .count();
+    if gone > MOST_VANISHED {
+        bail!("Tuta no longer lists {gone} mails; not removing them");
+    }
+    Ok(actions)
+}
+
 fn relocate(maildir: &Maildir, state: &mut State, id: &MailId, to: &str) -> Result<()> {
     let Some(entry) = state.get(id) else {
         return Ok(());
@@ -320,13 +354,15 @@ impl Mirror {
 
     /// Fetches every mirrored folder's mails that are not in the Maildir yet, newest first.
     ///
-    /// A mail that cannot be read is skipped and tried again at the next start.
+    /// Returns the Maildir folder of every mail Tuta listed. A mail that cannot
+    /// be read is skipped and tried again at the next start.
     ///
     /// # Errors
     ///
     /// Fails on the first Tuta refusal on a listing, on a disk error, or after
     /// three mails in a row could not be read.
-    pub async fn initial(&mut self, layout: &Layout) -> Result<()> {
+    pub async fn initial(&mut self, layout: &Layout) -> Result<HashMap<MailId, String>> {
+        let mut listing = HashMap::new();
         for Place {
             entries,
             name: folder,
@@ -335,6 +371,10 @@ impl Mirror {
         {
             let ids = self.fetcher.mail_ids(&GeneratedId(entries.clone())).await?;
             let total = ids.len();
+            listing.extend(
+                ids.iter()
+                    .map(|id| (MailId(id.element_id.0.clone()), folder.clone())),
+            );
             let fresh: Vec<IdTupleGenerated> = ids
                 .into_iter()
                 .filter(|id| self.state.get(&MailId(id.element_id.0.clone())).is_none())
@@ -344,6 +384,29 @@ impl Mirror {
                 for mail in self.fetcher.mails(chunk).await? {
                     self.deliver(&mail, folder).await?;
                 }
+            }
+        }
+        Ok(listing)
+    }
+
+    /// Drops the mails Tuta no longer lists and moves the ones it filed elsewhere.
+    ///
+    /// For a start after the event stream's replay window has passed. Read
+    /// flags are not compared.
+    ///
+    /// # Errors
+    ///
+    /// Fails when over 100 mails would be dropped, or on a disk error.
+    pub fn reconcile(&mut self, layout: &Layout, listing: &HashMap<MailId, String>) -> Result<()> {
+        let actions = stale(&self.state, layout, listing)?;
+        if !actions.is_empty() {
+            info!("{} changes made in Tuta while away", actions.len());
+        }
+        for action in actions {
+            match action {
+                Action::Move { id, to } => relocate(&self.maildir, &mut self.state, &id, &to)?,
+                Action::Remove { id } => discard(&self.maildir, &mut self.state, &id)?,
+                Action::Deliver { .. } | Action::Refresh { .. } => {}
             }
         }
         Ok(())
@@ -358,7 +421,9 @@ impl Mirror {
     /// the caller must not record it.
     pub async fn apply(&mut self, layout: &mut Layout, batch: &Batch) -> Result<()> {
         if batch.updates.iter().any(|u| is(u, MAIL_SET, u.operation)) {
-            *layout = Layout::new(&folders::load(&self.sdk).await?);
+            let current = Layout::new(&folders::load(&self.sdk).await?);
+            self.rename_folders(&layout.renames(&current))?;
+            *layout = current;
         }
         for action in plan(batch, layout, &self.state) {
             match action {
@@ -386,6 +451,18 @@ impl Mirror {
                     }
                     sleep(PAUSE).await;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn rename_folders(&mut self, renames: &[(String, String)]) -> Result<()> {
+        for (from, to) in renames {
+            if self.maildir.rename_folder(from, to)? {
+                self.state.rename_folder(from, to)?;
+                info!("folder {from} is now {to}");
+            } else {
+                warn!("cannot rename folder {from} to {to}, which exists; mail stays in {from}");
             }
         }
         Ok(())
@@ -716,5 +793,75 @@ mod tests {
         maildir.remove("INBOX", &file).unwrap();
         relocate(&maildir, &mut state, &id, "Work").unwrap();
         assert!(state.get(&id).is_none());
+    }
+
+    fn listing(places: &[(&str, &str)]) -> HashMap<MailId, String> {
+        places
+            .iter()
+            .map(|(id, folder)| (MailId((*id).to_owned()), (*folder).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn what_tuta_dropped_or_moved_while_away_is_caught_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, state) = written(
+            dir.path(),
+            &[
+                ("A1", "INBOX"),
+                ("A2", "INBOX"),
+                ("A3", "INBOX"),
+                ("A4", "Gone"),
+            ],
+        );
+        let listing = listing(&[("A1", "INBOX"), ("A3", "Work")]);
+        let actions = stale(&state, &layout(), &listing).unwrap();
+        assert_eq!(
+            actions,
+            [
+                Action::Remove {
+                    id: MailId("A2".to_owned())
+                },
+                Action::Move {
+                    id: MailId("A3".to_owned()),
+                    to: "Work".to_owned()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn too_many_mails_gone_at_once_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let ids: Vec<String> = (0..=MOST_VANISHED).map(|n| format!("A{n}")).collect();
+        let placed: Vec<(&str, &str)> = ids.iter().map(|id| (id.as_str(), "INBOX")).collect();
+        let (_, state) = written(dir.path(), &placed);
+        assert!(stale(&state, &layout(), &listing(&[])).is_err());
+        let kept: Vec<(&str, &str)> = placed.iter().skip(1).copied().collect();
+        assert!(stale(&state, &layout(), &listing(&kept)).is_ok());
+    }
+
+    #[test]
+    fn a_renamed_folder_and_its_children_are_paired_by_their_tuta_id() {
+        let tree = |parent: &str| {
+            Layout::new(&[
+                folder("e-inbox", "", MailSetKind::Inbox, 0),
+                folder("e-work", parent, MailSetKind::Custom, 0),
+                folder("e-clients", "Clients", MailSetKind::Custom, 1),
+            ])
+        };
+        let renames = tree("Work").renames(&tree("Jobs"));
+        assert_eq!(
+            renames,
+            [
+                ("Work".to_owned(), "Jobs".to_owned()),
+                ("Work.Clients".to_owned(), "Jobs.Clients".to_owned()),
+            ]
+        );
+        assert!(tree("Work").renames(&tree("Work")).is_empty());
+        assert!(tree("Work")
+            .renames(&layout())
+            .iter()
+            .all(|(from, _)| from != "INBOX"));
     }
 }

@@ -132,6 +132,26 @@ impl Maildir {
         Ok(Some(name))
     }
 
+    /// Renames a folder and returns false when the new name is already taken.
+    ///
+    /// A folder that is not there counts as renamed, since it holds nothing.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an unusable folder name or when the directory cannot be renamed.
+    pub fn rename_folder(&self, from: &str, to: &str) -> Result<bool> {
+        let (source, target) = (self.folder(from)?, self.folder(to)?);
+        if !source.exists() {
+            return Ok(true);
+        }
+        if target.exists() {
+            return Ok(false);
+        }
+        fs::rename(&source, &target)
+            .with_context(|| format!("cannot rename {}", source.display()))?;
+        Ok(true)
+    }
+
     /// Lists the file names of a folder, or `None` when the folder is not there.
     ///
     /// # Errors
@@ -477,5 +497,25 @@ mod tests {
         let text = fs::read_to_string(mail.join("cur/1767225600.P2.tutad:2,S")).unwrap();
         assert!(text.contains("Message-ID: <real@example.org>\n"));
         assert!(text.contains("multipart/mixed"));
+    }
+
+    #[test]
+    fn a_folder_is_renamed_unless_the_new_name_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let maildir = Maildir::open(dir.path());
+        let one = message("A1", false);
+        let two = message("A2", false);
+        maildir.deliver("Work", &one, "x\n").unwrap();
+        maildir.deliver("Taken", &two, "x\n").unwrap();
+        assert!(maildir.rename_folder("Work", "Jobs").unwrap());
+        assert!(!dir.path().join(".Work").exists());
+        assert_eq!(
+            names(&dir.path().join(".Jobs/cur")),
+            ["1767225600.A1.tutad:2,S"]
+        );
+        assert!(!maildir.rename_folder("Jobs", "Taken").unwrap());
+        assert!(dir.path().join(".Jobs").exists());
+        assert!(maildir.rename_folder("Nothing", "Else").unwrap());
+        assert!(maildir.rename_folder("Jobs", "a/b").is_err());
     }
 }

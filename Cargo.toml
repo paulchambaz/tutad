@@ -1,0 +1,28 @@
+[package]
+name = "tutad"
+description = "Daemon that turns a Tuta mailbox into a Maildir and Tuta submissions into mail"
+authors = ["Paul Chambaz <paul.chambaz@tutanota.com>"]
+homepage = "https://github.com/paulchambaz/tutad"
+version = "0.1.0"
+edition = "2021"
+include = ["/src/**/*", "/tutad.1.scd", "/README.md", "/LICENSE"]
+license = "GPL-3.0-only"
+readme = "README.md"
+documentation = "https://docs.rs/tutad"
+repository = "https://github.com/paulchambaz/tutad"
+keywords = ["tuta", "tutanota", "maildir", "email", "daemon"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1.0.104"
+directories = "6.0.0"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+toml = "1.1.8"
+
+[[bin]]
+name = "tutad"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3.27.0"

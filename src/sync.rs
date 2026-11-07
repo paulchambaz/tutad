@@ -1,6 +1,8 @@
 //! Keeps the Maildir equal to the Tuta mailbox: a first fetch, then each change as it arrives.
 
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +30,7 @@ const MAIL_SET_ENTRY: i64 = 1450;
 pub(crate) const PAUSE: Duration = Duration::from_millis(150);
 const CHUNK: usize = 20;
 const MOST_FAILURES: u32 = 3;
+const RENAMING: &str = "rename.tsv";
 const ENTRY_ID_BYTES: usize = 13;
 const TIMESTAMP_BYTES: usize = 4;
 const ALPHABET: &[u8; 64] = b"-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
@@ -285,6 +288,35 @@ fn stale(state: &State, layout: &Layout, listing: &HashMap<MailId, String>) -> R
     Ok(actions)
 }
 
+fn rename(maildir: &Maildir, state: &mut State, from: &str, to: &str) -> Result<()> {
+    let journal = state.dir().join(RENAMING);
+    fs::write(&journal, format!("{from}\t{to}\n"))
+        .with_context(|| format!("cannot write {}", journal.display()))?;
+    if maildir.rename_folder(from, to)? {
+        state.rename_folder(from, to)?;
+        info!("folder {from} is now {to}");
+    } else {
+        warn!("cannot rename folder {from} to {to}, which exists; mail stays in {from}");
+    }
+    fs::remove_file(&journal).with_context(|| format!("cannot remove {}", journal.display()))
+}
+
+fn resume_rename(maildir: &Maildir, state: &mut State) -> Result<()> {
+    let journal = state.dir().join(RENAMING);
+    let text = match fs::read_to_string(&journal) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot read {}", journal.display()))
+        }
+    };
+    match text.trim_end().split_once('\t') {
+        Some((from, to)) => rename(maildir, state, from, to),
+        None => fs::remove_file(&journal)
+            .with_context(|| format!("cannot remove {}", journal.display())),
+    }
+}
+
 fn relocate(maildir: &Maildir, state: &mut State, id: &MailId, to: &str) -> Result<()> {
     let Some(entry) = state.get(id) else {
         return Ok(());
@@ -458,14 +490,18 @@ impl Mirror {
 
     fn rename_folders(&mut self, renames: &[(String, String)]) -> Result<()> {
         for (from, to) in renames {
-            if self.maildir.rename_folder(from, to)? {
-                self.state.rename_folder(from, to)?;
-                info!("folder {from} is now {to}");
-            } else {
-                warn!("cannot rename folder {from} to {to}, which exists; mail stays in {from}");
-            }
+            rename(&self.maildir, &mut self.state, from, to)?;
         }
         Ok(())
+    }
+
+    /// Finishes a folder rename that a crash cut short.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the journal cannot be read or removed, or on a disk error.
+    pub fn resume_rename(&mut self) -> Result<()> {
+        resume_rename(&self.maildir, &mut self.state)
     }
 
     async fn deliver(&mut self, mail: &Mail, folder: &str) -> Result<()> {
@@ -863,5 +899,27 @@ mod tests {
             .renames(&layout())
             .iter()
             .all(|(from, _)| from != "INBOX"));
+    }
+
+    #[test]
+    fn a_rename_cut_short_is_finished_at_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (maildir, mut state) = written(dir.path(), &[("A1", "Work")]);
+        fs::write(dir.path().join("state").join(RENAMING), "Work\tJobs\n").unwrap();
+        resume_rename(&maildir, &mut state).unwrap();
+        assert_eq!(state.get(&MailId("A1".to_owned())).unwrap().folder, "Jobs");
+        assert!(dir.path().join("mail/.Jobs/cur").exists());
+        assert!(!dir.path().join("state").join(RENAMING).exists());
+        resume_rename(&maildir, &mut state).unwrap();
+    }
+
+    #[test]
+    fn a_rename_whose_directory_moved_but_record_did_not_is_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (maildir, mut state) = written(dir.path(), &[("A1", "Work")]);
+        assert!(maildir.rename_folder("Work", "Jobs").unwrap());
+        fs::write(dir.path().join("state").join(RENAMING), "Work\tJobs\n").unwrap();
+        resume_rename(&maildir, &mut state).unwrap();
+        assert_eq!(state.get(&MailId("A1".to_owned())).unwrap().folder, "Jobs");
     }
 }

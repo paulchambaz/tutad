@@ -155,6 +155,7 @@ async fn run() -> Result<()> {
     let state = State::open(&connected.state)?;
     let maildir = Maildir::open(&connected.config.maildir);
     let mut mirror = Mirror::new(connected.sdk, maildir, state);
+    mirror.resume_rename()?;
     sent::compact(&connected.state, now()?)?;
     let mut heads = HashMap::new();
     for pass in 0..2 {

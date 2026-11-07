@@ -21,6 +21,7 @@ pub struct Entry {
 
 /// The mails written so far, kept in an append-only file that survives restarts.
 pub struct State {
+    dir: PathBuf,
     entries: BTreeMap<MailId, Entry>,
     log: File,
 }
@@ -72,7 +73,16 @@ impl State {
             .append(true)
             .open(&path)
             .with_context(|| format!("cannot open {}", path.display()))?;
-        Ok(Self { entries, log })
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            entries,
+            log,
+        })
+    }
+
+    /// The directory the record lives in.
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// Where a mail was written, if it was.

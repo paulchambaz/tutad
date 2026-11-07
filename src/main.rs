@@ -4,7 +4,15 @@ mod cli;
 mod config;
 mod credentials;
 mod governor;
+#[cfg_attr(not(test), expect(dead_code))]
+mod maildir;
+#[cfg_attr(not(test), expect(dead_code))]
+mod message;
+#[cfg_attr(not(test), expect(dead_code))]
+mod render;
 mod sdk;
+#[cfg_attr(not(test), expect(dead_code))]
+mod state;
 mod totp;
 
 use std::process::ExitCode;

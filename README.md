@@ -4,10 +4,6 @@ tutad is a daemon between [Tuta](https://tuta.com) and a regular mail server. Ma
 
 It has no IMAP or SMTP server of its own and opens no port. Reading, moving and deleting in your client are written back to Tuta, and the copy of a sent mail that your client files in Sent is dropped in favour of the one Tuta keeps.
 
-## Status
-
-Receiving and sending work on a real account: login, the initial fetch, the live event stream and sends through Postfix. Write-back of read flags, moves and deletes, attachments, HTML and Bcc on send, and the removal of the duplicate Sent copy are built and tested offline, and have had less use live. See [`PLAN.md`](./PLAN.md).
-
 ## Installation
 
 ### Nix

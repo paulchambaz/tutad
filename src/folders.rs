@@ -12,7 +12,9 @@ const MOST_FOLDERS: usize = 100;
 /// A folder and how deep it sits in the tree.
 #[derive(Debug, PartialEq)]
 pub struct Folder {
+    pub list: String,
     pub id: String,
+    pub entries: String,
     pub name: String,
     pub kind: MailSetKind,
     pub depth: usize,
@@ -75,7 +77,13 @@ fn walk(
     for set in children {
         let Some(own) = id(set) else { continue };
         out.push(Folder {
+            list: set
+                ._id
+                .as_ref()
+                .map(|id| id.list_id.0.clone())
+                .unwrap_or_default(),
             id: own.0.clone(),
+            entries: set.entries.0.clone(),
             name: set.name.clone(),
             kind: kind(set),
             depth,
@@ -114,7 +122,7 @@ mod tests {
             color: None,
             _kdfNonce: None,
             parentFolder: parent.map(tuple),
-            entries: GeneratedId(String::new()),
+            entries: GeneratedId(format!("entries-{id}")),
             _errors: Default::default(),
         }
     }

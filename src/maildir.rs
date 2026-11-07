@@ -1,12 +1,14 @@
 //! Writes messages into a Maildir++ tree the way a mail delivery agent does.
 
 use std::fs::{self, File};
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 use crate::message::Message;
+
+const HEAD: u64 = 8192;
 
 /// A Maildir++ tree, with the inbox at the root and other folders as `.Name` below it.
 pub struct Maildir {
@@ -70,6 +72,145 @@ impl Maildir {
         Ok(name)
     }
 
+    /// Deletes a mail's file, wherever Dovecot has renamed it, and does nothing if it is gone.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an unusable folder or when the file cannot be removed.
+    pub fn remove(&self, folder: &str, file: &str) -> Result<()> {
+        let Some((path, _)) = self.locate(folder, file)? else {
+            return Ok(());
+        };
+        fs::remove_file(&path).with_context(|| format!("cannot remove {}", path.display()))
+    }
+
+    /// Sets or clears a mail's read flag and returns its new file name, or `None` if it is gone.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an unusable folder or when the file cannot be renamed.
+    pub fn set_seen(&self, folder: &str, file: &str, seen: bool) -> Result<Option<String>> {
+        let Some((path, name)) = self.locate(folder, file)? else {
+            return Ok(None);
+        };
+        let (stem, flags) = split(&name);
+        if flags.contains('S') == seen {
+            return Ok(Some(name));
+        }
+        let mut letters: Vec<char> = flags.chars().filter(|&letter| letter != 'S').collect();
+        if seen {
+            letters.push('S');
+        }
+        letters.sort_unstable();
+        let renamed = format!("{stem}:2,{}", letters.into_iter().collect::<String>());
+        let target = self.folder(folder)?.join("cur").join(&renamed);
+        fs::rename(&path, &target).with_context(|| format!("cannot rename {}", path.display()))?;
+        Ok(Some(renamed))
+    }
+
+    /// Moves a mail to another folder and returns its file name, or `None` if it is gone.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an unusable folder or when the file cannot be renamed.
+    pub fn move_to(&self, from: &str, file: &str, to: &str) -> Result<Option<String>> {
+        let Some((path, name)) = self.locate(from, file)? else {
+            return Ok(None);
+        };
+        let subdirectory = path
+            .parent()
+            .and_then(Path::file_name)
+            .with_context(|| format!("cannot place {}", path.display()))?;
+        let directory = self.folder(to)?;
+        for part in ["tmp", "new", "cur"] {
+            let made = directory.join(part);
+            fs::create_dir_all(&made)
+                .with_context(|| format!("cannot create {}", made.display()))?;
+        }
+        let target = directory.join(subdirectory).join(&name);
+        fs::rename(&path, &target).with_context(|| format!("cannot rename {}", path.display()))?;
+        Ok(Some(name))
+    }
+
+    /// Lists the file names of a folder, or `None` when the folder is not there.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an unusable folder or when a directory cannot be read.
+    pub fn files(&self, folder: &str) -> Result<Option<Vec<String>>> {
+        let directory = self.folder(folder)?;
+        let mut names = Vec::new();
+        let mut found = false;
+        for part in ["new", "cur"] {
+            let entries = match fs::read_dir(directory.join(part)) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("cannot read {}", directory.display()))
+                }
+            };
+            found = true;
+            for entry in entries {
+                let entry =
+                    entry.with_context(|| format!("cannot read {}", directory.display()))?;
+                names.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        Ok(found.then_some(names))
+    }
+
+    /// Reads the first bytes of a mail, enough for its headers, or `None` if it is gone.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an unusable folder or when the file cannot be read.
+    pub fn head(&self, folder: &str, file: &str) -> Result<Option<Vec<u8>>> {
+        let Some((path, _)) = self.locate(folder, file)? else {
+            return Ok(None);
+        };
+        let opened = match File::open(&path) {
+            Ok(opened) => opened,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot read {}", path.display()))
+            }
+        };
+        let mut bytes = Vec::new();
+        opened
+            .take(HEAD)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        Ok(Some(bytes))
+    }
+
+    fn locate(&self, folder: &str, file: &str) -> Result<Option<(PathBuf, String)>> {
+        let directory = self.folder(folder)?;
+        let (stem, _) = split(file);
+        for part in ["new", "cur"] {
+            let entries = match fs::read_dir(directory.join(part)) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("cannot read {}", directory.display()))
+                }
+            };
+            for entry in entries {
+                let name = entry
+                    .with_context(|| format!("cannot read {}", directory.display()))?
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned();
+                let rest = name.strip_prefix(stem);
+                if rest.is_some_and(|rest| rest.is_empty() || rest.starts_with([':', ','])) {
+                    return Ok(Some((directory.join(part).join(&name), name)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     fn folder(&self, name: &str) -> Result<PathBuf> {
         if name == "INBOX" {
             return Ok(self.root.clone());
@@ -83,12 +224,29 @@ impl Maildir {
     }
 }
 
+/// The part of a file name that never changes, whatever flags or sizes get added.
+pub fn key(file: &str) -> &str {
+    file.split([':', ',']).next().unwrap_or(file)
+}
+
+/// Whether a file name carries the read flag.
+pub fn is_seen(file: &str) -> bool {
+    split(file).1.contains('S')
+}
+
+fn split(file: &str) -> (&str, &str) {
+    match file.split_once(':') {
+        Some((stem, info)) => (stem, info.strip_prefix("2,").unwrap_or("")),
+        None => (file, ""),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::message::{Address, Attachment, MailId};
     use crate::render::render;
-    use crate::state::State;
+    use crate::state::{Entry, State};
 
     fn message(id: &str, unread: bool) -> Message {
         Message {
@@ -181,6 +339,95 @@ mod tests {
         assert!(names(dir.path()).is_empty());
     }
 
+    #[test]
+    fn a_mail_is_found_after_dovecot_renamed_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let maildir = Maildir::open(dir.path());
+        let name = maildir
+            .deliver("INBOX", &message("A1", true), "x\n")
+            .unwrap();
+        fs::rename(
+            dir.path().join("new").join(&name),
+            dir.path().join("cur/1767225600.A1.tutad,S=2:2,F"),
+        )
+        .unwrap();
+        let moved = maildir.set_seen("INBOX", &name, true).unwrap().unwrap();
+        assert_eq!(moved, "1767225600.A1.tutad,S=2:2,FS");
+        assert!(dir.path().join("cur").join(&moved).exists());
+        assert_eq!(
+            maildir.set_seen("INBOX", &moved, true).unwrap(),
+            Some(moved)
+        );
+        maildir.remove("INBOX", &name).unwrap();
+        assert!(names(&dir.path().join("cur")).is_empty());
+        maildir.remove("INBOX", &name).unwrap();
+        assert_eq!(maildir.set_seen("INBOX", &name, true).unwrap(), None);
+    }
+
+    #[test]
+    fn marking_seen_moves_a_new_mail_to_cur() {
+        let dir = tempfile::tempdir().unwrap();
+        let maildir = Maildir::open(dir.path());
+        let name = maildir
+            .deliver("INBOX", &message("A1", true), "x\n")
+            .unwrap();
+        let seen = maildir.set_seen("INBOX", &name, true).unwrap().unwrap();
+        assert_eq!(seen, "1767225600.A1.tutad:2,S");
+        assert!(names(&dir.path().join("new")).is_empty());
+        assert!(dir.path().join("cur").join(seen).exists());
+    }
+
+    #[test]
+    fn the_read_flag_can_be_cleared_and_other_flags_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let maildir = Maildir::open(dir.path());
+        let name = maildir
+            .deliver("INBOX", &message("A1", false), "x\n")
+            .unwrap();
+        assert_eq!(name, "1767225600.A1.tutad:2,S");
+        let flagged = "1767225600.A1.tutad:2,FS";
+        fs::rename(
+            dir.path().join("cur").join(&name),
+            dir.path().join("cur").join(flagged),
+        )
+        .unwrap();
+        let unseen = maildir.set_seen("INBOX", &name, false).unwrap().unwrap();
+        assert_eq!(unseen, "1767225600.A1.tutad:2,F");
+        assert_eq!(
+            maildir.set_seen("INBOX", &unseen, false).unwrap(),
+            Some(unseen.clone())
+        );
+        let fresh = maildir
+            .deliver("INBOX", &message("A2", true), "y\n")
+            .unwrap();
+        assert_eq!(
+            maildir.set_seen("INBOX", &fresh, false).unwrap(),
+            Some(fresh)
+        );
+        assert!(dir.path().join("new/1767225600.A2.tutad").exists());
+    }
+
+    #[test]
+    fn moving_keeps_the_file_and_its_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let maildir = Maildir::open(dir.path());
+        let read = maildir
+            .deliver("INBOX", &message("A1", false), "x\n")
+            .unwrap();
+        let unread = maildir
+            .deliver("INBOX", &message("A2", true), "y\n")
+            .unwrap();
+        assert_eq!(
+            maildir.move_to("INBOX", &read, "Work.Clients").unwrap(),
+            Some(read.clone())
+        );
+        maildir.move_to("INBOX", &unread, "Archive").unwrap();
+        assert!(dir.path().join(".Work.Clients/cur").join(&read).exists());
+        assert!(dir.path().join(".Archive/new").join(&unread).exists());
+        assert!(names(&dir.path().join("cur")).is_empty());
+        assert_eq!(maildir.move_to("INBOX", &read, "Archive").unwrap(), None);
+    }
+
     fn fixtures() -> Vec<(&'static str, Message)> {
         let mut plain = message("P1", true);
         plain.subject = "Plain".to_owned();
@@ -211,7 +458,12 @@ mod tests {
         let mut state = State::open(&dir.path().join("state")).unwrap();
         for (folder, mail) in fixtures() {
             let name = maildir.deliver(folder, &mail, &render(&mail)).unwrap();
-            state.set(&mail.id, folder, &name).unwrap();
+            let entry = Entry {
+                folder: folder.to_owned(),
+                file: name,
+                list: "l".to_owned(),
+            };
+            state.set(&mail.id, entry).unwrap();
         }
         let mail = dir.path().join("mail");
         assert_eq!(names(&mail.join("new")), ["1767225600.P1.tutad"]);

@@ -5,13 +5,15 @@ use thiserror::Error;
 /// The usage shown by `-h` and after a mistake.
 pub const USAGE: &str = "Usage: tutad [-hV]
        tutad run
-       tutad send
+       tutad send RECIPIENT...
        tutad folders
+       tutad fetch FOLDER
 
 A daemon between Tuta and a regular mail server. `run` keeps a Maildir in
 step with the Tuta mailbox; `send` reads one message on standard input and
-sends it through Tuta, for Postfix to call; `folders` logs in or resumes the
-saved session, prints the Tuta folders and changes nothing in the account.
+sends it through Tuta to the recipients, for Postfix to call; `folders` logs in or resumes the
+saved session, prints the Tuta folders and changes nothing in the account;
+`fetch` writes the new mail of one folder, named as in the Maildir, and stops.
 
   -h    print this help and exit
   -V    print the version and exit
@@ -23,10 +25,12 @@ See man tutad for the rest.";
 pub enum Cli {
     /// Keep the Maildir and the Tuta mailbox in step.
     Run,
-    /// Send the message on standard input through Tuta.
-    Send,
+    /// Send the message on standard input through Tuta to these recipients.
+    Send(Vec<String>),
     /// Log in or resume, print the Tuta folders and stop.
     Folders,
+    /// Write the new mail of one Maildir folder and stop.
+    Fetch(String),
     /// Print the usage.
     Help,
     /// Print the version.
@@ -45,6 +49,9 @@ pub enum Error {
     /// Nothing was asked for.
     #[error("missing command")]
     Missing,
+    /// `fetch` needs the folder to fetch.
+    #[error("fetch needs a folder")]
+    NeedsFolder,
 }
 
 /// Reads the arguments after the program name.
@@ -54,12 +61,21 @@ pub enum Error {
 /// Fails when the arguments are not a command or a flag.
 pub fn parse(args: &[String]) -> Result<Cli, Error> {
     let (first, rest) = args.split_first().ok_or(Error::Missing)?;
+    if first == "send" {
+        return Ok(Cli::Send(rest.to_vec()));
+    }
+    if first == "fetch" {
+        return match rest {
+            [] => Err(Error::NeedsFolder),
+            [folder] => Ok(Cli::Fetch(folder.clone())),
+            [_, extra, ..] => Err(Error::Extra(extra.clone())),
+        };
+    }
     if let Some(extra) = rest.first() {
         return Err(Error::Extra(extra.clone()));
     }
     match first.as_str() {
         "run" => Ok(Cli::Run),
-        "send" => Ok(Cli::Send),
         "folders" => Ok(Cli::Folders),
         "-h" | "--help" => Ok(Cli::Help),
         "-V" | "--version" => Ok(Cli::Version),
@@ -78,8 +94,15 @@ mod tests {
     #[test]
     fn commands_and_flags_are_read() {
         assert_eq!(parse(&args(&["run"])), Ok(Cli::Run));
-        assert_eq!(parse(&args(&["send"])), Ok(Cli::Send));
+        assert_eq!(
+            parse(&args(&["send", "a@b.c", "d@e.f"])),
+            Ok(Cli::Send(args(&["a@b.c", "d@e.f"])))
+        );
         assert_eq!(parse(&args(&["folders"])), Ok(Cli::Folders));
+        assert_eq!(
+            parse(&args(&["fetch", "Work.Clients"])),
+            Ok(Cli::Fetch("Work.Clients".to_owned()))
+        );
         assert_eq!(parse(&args(&["-h"])), Ok(Cli::Help));
         assert_eq!(parse(&args(&["--version"])), Ok(Cli::Version));
     }
@@ -94,6 +117,11 @@ mod tests {
         assert_eq!(
             parse(&args(&["run", "now"])),
             Err(Error::Extra("now".to_owned()))
+        );
+        assert_eq!(parse(&args(&["fetch"])), Err(Error::NeedsFolder));
+        assert_eq!(
+            parse(&args(&["fetch", "a", "b"])),
+            Err(Error::Extra("b".to_owned()))
         );
     }
 }

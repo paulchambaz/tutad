@@ -1,7 +1,7 @@
 //! Plain data for one Tuta mail, as the renderer and the Maildir need it.
 
 /// The element id of a mail, unique in the mailbox and kept when the mail moves.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MailId(pub String);
 
 /// A name and an address.

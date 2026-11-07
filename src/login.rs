@@ -189,6 +189,20 @@ pub async fn connect(
     }
 }
 
+/// Resumes the saved session and never logs in, for a command that must not touch the login.
+///
+/// A refused session is left for the daemon to remove.
+///
+/// # Errors
+///
+/// Fails when there is no saved session or Tuta does not accept it.
+pub async fn resume(sdk: &Sdk, dir: &Path) -> Result<Arc<LoggedInSdk>> {
+    let credentials = session::load(dir)?.context("there is no saved session; start tutad run")?;
+    sdk.login(credentials)
+        .await
+        .map_err(|error| refuse(&error, "the saved session could not be resumed"))
+}
+
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
@@ -291,6 +305,15 @@ mod tests {
             .unwrap();
         assert_eq!(how, How::Resumed);
         assert_eq!(fs::read(dir.path().join("session.json")).unwrap(), before);
+        assert!(!dir.path().join(ATTEMPT_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn resume_needs_a_saved_session_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(resume(&offline_sdk(), dir.path()).await.is_err());
+        session::save(dir.path(), &fixture::credentials()).unwrap();
+        resume(&offline_sdk(), dir.path()).await.unwrap();
         assert!(!dir.path().join(ATTEMPT_FILE).exists());
     }
 

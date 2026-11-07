@@ -71,13 +71,13 @@ UMask=0077
 
 `RestartSec=300` matters: tutad never logs in twice within five minutes, so a failure shows as one restart every five minutes and never as a loop of requests.
 
-More in the [`man`](./tutad.1.scd) page (`man tutad` once installed), [`CONTRACT.md`](./CONTRACT.md) for the design, and [`docs/`](./docs) for the Maildir layout, what is known about Tuta, and the [runbook](./docs/RUNBOOK.md) for what to do when something fails.
+Everything is detailed in the [`man`](./tutad.1.scd) page (`man tutad` once installed), including what to do when something fails.
 
 ## Limits
 
 - Tuta has no flags besides read and unread, so tutad sets and reads only the Maildir flag `S`.
 - After more than 44 days without running, Tuta's changes can no longer be replayed. tutad then drops the mail that is gone and moves the mail filed elsewhere, but does not compare read flags.
-- tutad talks to Tuta's own API, which changes about every two weeks. A release that Tuta refuses needs a new SDK; see the runbook.
+- tutad talks to Tuta's own API, which changes about every two weeks. A release that Tuta refuses needs a new build; see UPDATING in the man page.
 
 ## Building
 

@@ -1,5 +1,6 @@
 //! The settings of the daemon, read from `config.toml`.
 
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,22 @@ pub struct Config {
 pub fn default_path() -> Result<PathBuf> {
     let dirs = ProjectDirs::from("", "", "tutad").context("cannot find the home directory")?;
     Ok(dirs.config_dir().join("config.toml"))
+}
+
+/// The directory for the session and the record of synced mail.
+///
+/// # Errors
+///
+/// Fails when neither systemd nor the home directory gives a place.
+pub fn state_dir() -> Result<PathBuf> {
+    if let Some(dir) = env::var_os("STATE_DIRECTORY") {
+        return Ok(PathBuf::from(dir));
+    }
+    let dirs = ProjectDirs::from("", "", "tutad").context("cannot find the home directory")?;
+    Ok(dirs
+        .state_dir()
+        .unwrap_or_else(|| dirs.data_local_dir())
+        .to_path_buf())
 }
 
 /// Reads the settings from a file.

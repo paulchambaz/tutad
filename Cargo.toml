@@ -15,14 +15,25 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.104"
+async-trait = "0.1.92"
+base64 = "0.23.1"
+data-encoding = "2.11.1"
 directories = "6.0.0"
+hmac = "0.13.0"
+log = "0.4.35"
 serde = { version = "1.0.229", features = ["derive"] }
+sha1 = "0.11.0"
 thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 toml = "1.1.8"
+tuta-sdk = { version = "362.261020.0", path = "sdk/generated/tuta-sdk/rust/sdk", features = ["net"] }
 
 [[bin]]
 name = "tutad"
 path = "src/main.rs"
 
 [dev-dependencies]
+crypto-primitives = { path = "sdk/generated/tuta-sdk/rust/crypto-primitives" }
 tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["test-util"] }
+tuta-sdk = { path = "sdk/generated/tuta-sdk/rust/sdk", features = ["testing"] }

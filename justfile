@@ -16,6 +16,9 @@ watch-test:
 coverage:
   cargo tarpaulin
 
+sdk:
+  scripts/sdk.sh
+
 fmt:
   cargo fmt
 

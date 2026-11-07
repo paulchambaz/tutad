@@ -31,7 +31,21 @@
         pname = "tutad";
         version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
         src = ./.;
-        cargoLock.lockFile = ./Cargo.lock;
+        cargoLock = {
+          lockFile = ./Cargo.lock;
+          outputHashes = pkgs.lib.genAttrs [
+            "uniffi-0.27.1"
+            "uniffi_bindgen-0.27.1"
+            "uniffi_build-0.27.1"
+            "uniffi_checksum_derive-0.27.1"
+            "uniffi_core-0.27.1"
+            "uniffi_macros-0.27.1"
+            "uniffi_meta-0.27.1"
+            "uniffi_testing-0.27.1"
+            "uniffi_udl-0.27.1"
+            "weedle2-5.0.0"
+          ] (_: "sha256-3IH/e5DOPl2O3mJVKj9Ar60rRvSdDt4JUZ6SFEaiwcc=");
+        };
 
         nativeBuildInputs = buildPkgs;
 

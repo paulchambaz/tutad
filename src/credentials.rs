@@ -8,7 +8,6 @@ use anyhow::{Context, Result};
 
 /// The Tuta password and the `otpauth://` URI of its second factor.
 pub struct Credentials {
-    #[cfg_attr(not(test), expect(dead_code))]
     pub password: String,
     pub totp: String,
 }

@@ -14,6 +14,12 @@ use serde::Deserialize;
 pub struct Config {
     pub email: String,
     pub maildir: PathBuf,
+    #[serde(default = "default_api_url")]
+    pub api_url: String,
+}
+
+fn default_api_url() -> String {
+    "https://app.tuta.com".to_owned()
 }
 
 /// The place of `config.toml` for the current user.
@@ -69,6 +75,7 @@ mod tests {
         let config = load(&path).unwrap();
         assert_eq!(config.email, "a@tuta.com");
         assert_eq!(config.maildir, PathBuf::from("/var/lib/tutad"));
+        assert_eq!(config.api_url, "https://app.tuta.com");
     }
 
     #[test]

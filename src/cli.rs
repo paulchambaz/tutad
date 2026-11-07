@@ -6,10 +6,12 @@ use thiserror::Error;
 pub const USAGE: &str = "Usage: tutad [-hV]
        tutad run
        tutad send
+       tutad folders
 
 A daemon between Tuta and a regular mail server. `run` keeps a Maildir in
 step with the Tuta mailbox; `send` reads one message on standard input and
-sends it through Tuta, for Postfix to call.
+sends it through Tuta, for Postfix to call; `folders` logs in or resumes the
+saved session, prints the Tuta folders and changes nothing in the account.
 
   -h    print this help and exit
   -V    print the version and exit
@@ -23,6 +25,8 @@ pub enum Cli {
     Run,
     /// Send the message on standard input through Tuta.
     Send,
+    /// Log in or resume, print the Tuta folders and stop.
+    Folders,
     /// Print the usage.
     Help,
     /// Print the version.
@@ -56,6 +60,7 @@ pub fn parse(args: &[String]) -> Result<Cli, Error> {
     match first.as_str() {
         "run" => Ok(Cli::Run),
         "send" => Ok(Cli::Send),
+        "folders" => Ok(Cli::Folders),
         "-h" | "--help" => Ok(Cli::Help),
         "-V" | "--version" => Ok(Cli::Version),
         other => Err(Error::Unknown(other.to_owned())),
@@ -74,6 +79,7 @@ mod tests {
     fn commands_and_flags_are_read() {
         assert_eq!(parse(&args(&["run"])), Ok(Cli::Run));
         assert_eq!(parse(&args(&["send"])), Ok(Cli::Send));
+        assert_eq!(parse(&args(&["folders"])), Ok(Cli::Folders));
         assert_eq!(parse(&args(&["-h"])), Ok(Cli::Help));
         assert_eq!(parse(&args(&["--version"])), Ok(Cli::Version));
     }

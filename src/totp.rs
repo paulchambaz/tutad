@@ -77,12 +77,16 @@ impl Totp {
         })
     }
 
+    /// Seconds until the code valid at a time given in Unix seconds expires.
+    pub fn seconds_left(&self, unix_seconds: u64) -> u64 {
+        self.period - unix_seconds % self.period
+    }
+
     /// The code valid at a time given in seconds since the Unix epoch.
     ///
     /// # Errors
     ///
     /// Fails when the secret cannot key the HMAC.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub fn code(&self, unix_seconds: u64) -> Result<String, Error> {
         let mut mac = Hmac::<Sha1>::new_from_slice(&self.key).map_err(|_| Error::BadSecret)?;
         mac.update(&(unix_seconds / self.period).to_be_bytes());
@@ -127,6 +131,13 @@ mod tests {
             Totp::parse("otpauth://totp/a:b?secret=gezdgnbvgy3tqojqgezdgnbvgy3tqojq&issuer=a")
                 .unwrap();
         assert_eq!(totp.code(59).unwrap(), "287082");
+    }
+
+    #[test]
+    fn seconds_left_counts_down_to_the_next_period() {
+        let totp = Totp::parse(RFC_URI).unwrap();
+        assert_eq!(totp.seconds_left(60), 30);
+        assert_eq!(totp.seconds_left(89), 1);
     }
 
     #[test]

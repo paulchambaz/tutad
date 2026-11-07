@@ -384,8 +384,9 @@ impl Mirror {
         }
     }
 
-    /// Fetches every mirrored folder's mails that are not in the Maildir yet, newest first.
+    /// Fetches every mirrored folder's mails that are not in the Maildir yet, oldest first.
     ///
+    /// The oldest go first so Dovecot gives the newest the highest UIDs.
     /// Returns the Maildir folder of every mail Tuta listed. A mail that cannot
     /// be read is skipped and tried again at the next start.
     ///
@@ -409,6 +410,7 @@ impl Mirror {
             );
             let fresh: Vec<IdTupleGenerated> = ids
                 .into_iter()
+                .rev()
                 .filter(|id| self.state.get(&MailId(id.element_id.0.clone())).is_none())
                 .collect();
             info!("{folder}: {} new of {total}", fresh.len());
